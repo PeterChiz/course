@@ -2,3 +2,4 @@
 stock_ticker_database.db
 *venv
 .env
+aws/terraform/edurich/rag/

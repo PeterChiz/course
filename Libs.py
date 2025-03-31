@@ -1,15 +1,19 @@
 import os
-import boto3
-import json
 import time
 import logging
 from typing import Generator
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.retrievers import AmazonKnowledgeBasesRetriever
 
+# Cấu hình logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CLAUDE_SONNET_3_5 = 'anthropic.claude-3-5-sonnet-20240620-v1:0'
+# Cấu hình OpenAI
+os.environ["OPENAI_API_KEY"] = "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"  # Khuyến nghị dùng biến môi trường
+
+# Cấu hình Knowledge Base
 KB_ID = 'CIPIOZMGQZ'
 
 def extract_filename(location_data: dict) -> str:
@@ -26,11 +30,12 @@ def extract_filename(location_data: dict) -> str:
 def search_travelwith_fnb(
     prompt: str, 
     chat_history: list = None,
-    is_first: bool = False
+    is_first: bool = False,
+    model_name: str = "gpt-4o-2024-08-06"  
 ) -> Generator[str, None, None]:
     """Xử lý tìm kiếm và streaming response chi tiết"""
     try:
-        bedrock = boto3.client(service_name="bedrock-runtime", region_name="us-west-2")
+        # Khởi tạo retriever và model
         retriever = AmazonKnowledgeBasesRetriever(
             knowledge_base_id=KB_ID,
             retrieval_config={
@@ -41,27 +46,37 @@ def search_travelwith_fnb(
             }
         )
 
+        chat = ChatOpenAI(
+            model=model_name,  # Sử dụng model được chọn
+            temperature=0.1,
+            streaming=True
+        )
+
+        # Xử lý retrieval documents
         citations = []
         try:
             retrieved_docs = retriever.invoke(prompt)
-            if retrieved_docs:
-                for doc in retrieved_docs[:3]:
-                    source = extract_filename(doc.metadata.get('location', {}))
-                    # Lấy 150 ký tự đầu tiên của từng document và thêm dấu "..."
-                    content = doc.page_content.split('\n')[0][:150] + "..."
-                    citations.append({'source': source, 'content': content, 'full': doc.page_content})
+            for doc in retrieved_docs[:3]:
+                source = extract_filename(doc.metadata.get('location', {}))
+                content = doc.page_content.split('\n')[0][:150] + "..."
+                citations.append({
+                    'source': source,
+                    'content': content,
+                    'full': doc.page_content
+                })
         except Exception as e:
-            logger.error(f"Retrieval error: {str(e)}")
+            logger.error(f"Lỗi truy vấn dữ liệu: {str(e)}")
             yield "⚠️ Lỗi kết nối hệ thống. Vui lòng thử lại sau."
             return
 
+        # Xây dựng context và system prompt
         context = "\n".join([doc.page_content for doc in retrieved_docs][:3]) if retrieved_docs else ""
         
-        greeting = "Xin chào, em là chatbot AI tư vấn, hỗ trợ anh/chị về khóa học trên nền tảng Edurich.vn.\n\n" if is_first else ""
-        system_prompt = f"""{greeting}
-{context[:2000]}
+        system_content = f"""
+{'Xin chào, em là chatbot AI tư vấn Edurich' if is_first else ''}
+Context: {context[:2000]}
 
-    Bạn là chuyên gia tư vấn các khóa học trên edurich.vn Hãy:
+        Bạn là chuyên gia tư vấn các khóa học trên edurich.vn Hãy:
     1. XEM XÉT LỊCH SỬ CHAT TRƯỚC ĐÂY: {chat_history if chat_history else 'Bạn chưa nhắn gì trước đó cả'}
     2. DỰA VÀO CONTEXT HIỆN TẠI: {context}
     3. Trả lời câu hỏi: {prompt}
@@ -90,65 +105,23 @@ def search_travelwith_fnb(
 - Tự động hỗ trợ tư vấn không để khách chủ động trả lời trước, bot phải chủ động trả lời trước để hiểu được khách hàng cần tìm khóa học hay combo gì để tư vấn, dữ liệu được lấy trong 'course_data_edurich'. 
 - Tư vấn và hướng khách hàng tới các khóa học combo (nó bao gồm nhiều các khóa học đơn lẻ) để khách hàng lựa chọn vì các khóa học combo rẻ hơn nhiều so với các khóa đơn lẻ, dữ liệu được lấy trong 'course_data_edurich'. 
 
-
 """
 
-        response = bedrock.invoke_model_with_response_stream(
-            modelId=CLAUDE_SONNET_3_5,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 2000,
-                "messages": [{"role": "user", "content": system_prompt}],
-                "temperature": 0.3
-            })
-        )
+        messages = [
+            SystemMessage(content=system_content),
+            HumanMessage(content=prompt)
+        ]
 
+        # Xử lý streaming
         full_response = []
-        for event in response.get('body', []):
-            if chunk := event.get('chunk'):
-                try:
-                    data = json.loads(chunk['bytes'].decode())
-                    if text := data.get('delta', {}).get('text', ''):
-                        for char in text:
-                            full_response.append(char)
-                            yield char
-                            time.sleep(0.001)
-                except Exception as e:
-                    logger.error(f"Chunk error: {str(e)}")
-                    continue
-
-        answer_text = "".join(full_response)
-
-        # Hàm kiểm tra mức độ liên quan giữa citation và câu trả lời
-        def is_relevant(citation_text, answer_text, threshold=0.3):
-            cit_words = set(citation_text.lower().split())
-            ans_words = set(answer_text.lower().split())
-            if not cit_words:
-                return False
-            ratio = len(cit_words.intersection(ans_words)) / len(cit_words)
-            return ratio >= threshold
-
-        # Lọc các citation có liên quan dựa trên citation 'content'
-        relevant_citations = [cite for cite in citations if is_relevant(cite['content'], answer_text)]
-        
-        if relevant_citations:
-            # Hiển thị tiêu đề cho phần trích dẫn
-            yield "\n\n__📌 Trích dẫn liên quan:__\n"
-            for cite in relevant_citations:
-                # Nếu cần, bạn có thể rút gọn phần nội dung hiển thị ban đầu
-                full_text = cite.get('full', cite['content'])
-                truncated = full_text
-                if len(full_text) > 300:
-                    truncated = full_text[:300] + "..."
-                # Tạo toggle sử dụng thẻ <details> và <summary>
-                toggle_html = f"""
-<details>
-  <summary><strong>{cite['source']}</strong> (nhấn để xem chi tiết)</summary>
-  <p>{full_text}</p>    
-</details>
-"""
-                yield toggle_html
+        for chunk in chat.stream(messages):
+            content = chunk.content
+            if content:
+                for char in content:
+                    full_response.append(char)
+                    yield char
+                    time.sleep(0.001)
 
     except Exception as e:
-        logger.error(f"General error: {str(e)}")
+        logger.error(f"Lỗi tổng hợp: {str(e)}")
         yield "⛔ Đã xảy ra lỗi nghiêm trọng. Vui lòng thử lại sau."
