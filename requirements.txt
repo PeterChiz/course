@@ -11,8 +11,9 @@ bs4
 setuptools
 PyPDF2
 pypdf
-langchain==0.2.7
-langchain-community==0.2.7
 python-dotenv
 botocore
-langchain-openai langchain-community
+pydantic>=1.10.13,<2
+langchain-core>=0.1.0,<0.3
+langchain-community>=0.0.20,<0.2
+langchain-openai>=0.0.8,<0.1
