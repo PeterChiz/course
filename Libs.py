@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Cấu hình OpenAI
-os.environ["OPENAI_API_KEY"] = "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"  # Khuyến nghị dùng biến môi trường
+os.environ["OPENAI_API_KEY"] = "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"  # Khuyến nghị dùng biến môi trường
 
 # Cấu hình Knowledge Base
 KB_ID = 'CIPIOZMGQZ'
